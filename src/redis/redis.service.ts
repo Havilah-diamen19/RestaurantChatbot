@@ -126,4 +126,21 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   async del(key: string): Promise<void> {
     await this.client.del(key);
   }
+
+  // ── Menu Index ────────────────────────────────────────────────────────────
+
+private menuIndexKey(deviceId: string) {
+  return `menu:index:${deviceId}`;
+}
+
+/** Saves the ordered list of real menu item IDs for a device. TTL: 1 hour */
+async setMenuIndex(deviceId: string, ids: number[]): Promise<void> {
+  await this.set(this.menuIndexKey(deviceId), ids, 60 * 60);
+}
+
+/** Gets the ordered list of real menu item IDs for a device. */
+async getMenuIndex(deviceId: string): Promise<number[]> {
+  const ids = await this.get<number[]>(this.menuIndexKey(deviceId));
+  return ids ?? [];
+}
 }

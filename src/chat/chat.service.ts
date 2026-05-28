@@ -45,7 +45,7 @@ export class ChatService {
 
     // Global commands work from any state
     switch (cmd) {
-      case '1':     return this.showMenu(deviceId);
+      // case '1':     return this.showMenu(deviceId);
       case '99':    return this.checkout(deviceId, session);
       case '98':    return this.orderHistory(deviceId, session);
       case '97':    return this.currentOrder(deviceId, session);
@@ -57,10 +57,18 @@ export class ChatService {
 
     // State-specific routing
     switch (currentState) {
-      case ChatState.ORDERING: return this.handleOrdering(deviceId, session, cmd, input);
-      default:                 return this.handleUnknown(deviceId, input);
+      case ChatState.ORDERING:  return this.handleOrdering(deviceId, session, cmd, input);
+      case ChatState.HOME:      return this.handleHome(deviceId, cmd);  // ← new
+      default:                  return this.handleUnknown(deviceId, input);
     }
   }
+
+  private async handleHome(deviceId: string, cmd: string): Promise<ChatResult> {
+  switch (cmd) {
+    case '1': return this.showMenu(deviceId);  // ← "1" only works at HOME
+    default:  return this.handleUnknown(deviceId, cmd);
+  }
+}
 
   /** Called on first connect — returns greeting + main menu */
   async greet(deviceId: string): Promise<ChatResult> {
@@ -106,12 +114,15 @@ export class ChatService {
   async showMenu(deviceId: string): Promise<ChatResult> {
     await this.redis.setChatState(deviceId, ChatState.ORDERING);
     const items = await this.menu.findAll();
+
+     await this.redis.setMenuIndex(deviceId, items.map((i) => i.id));
     return {
       messages: [{
         type: 'menu_list',
         text: '🍴 Here\'s our menu. Type a number to add to cart:',
         payload: {
-          items: items.map((item) => ({
+          items: items.map((item, index) => ({
+            position: index + 1,
             id: item.id,
             name: item.name,
             description: item.description,
@@ -129,70 +140,107 @@ export class ChatService {
   }
 
   private async handleOrdering(
-    deviceId: string,
-    session: Session,
-    cmd: string,
-    raw: string,
-  ): Promise<ChatResult> {
-    if (cmd === 'done' || cmd === 'finish') {
-      const items = await this.orders.getCart(session);
-      if (items.length === 0) {
-        return {
-          messages: [{ type: 'error', text: '⚠️ Cart is empty. Add at least one item first.' }],
-          state: ChatState.ORDERING,
-        };
-      }
-      return this.checkout(deviceId, session);
+  deviceId: string,
+  session: Session,
+  cmd: string,
+  raw: string,
+): Promise<ChatResult> {
+  if (cmd === 'done' || cmd === 'finish') {
+    const items = await this.orders.getCart(session);
+    if (items.length === 0) {
+      return {
+        messages: [{ type: 'error', text: '⚠️ Cart is empty. Add at least one item first.' }],
+        state: ChatState.ORDERING,
+      };
     }
+    return this.checkout(deviceId, session);
+  }
 
-    const num = parseInt(cmd, 10);
-    if (!isNaN(num) && num >= 1 && num <= 10) {
-      return this.addItem(deviceId, session, num);
-    }
+  const num = parseInt(cmd, 10);
 
+  // ✅ Fetch real menu length instead of hardcoded 10
+  const menuIndex = await this.redis.getMenuIndex(deviceId);
+  const menuSize = menuIndex.length || 10; // fallback to 10 if not loaded yet
+
+  if (!isNaN(num) && num >= 1 && num <= menuSize) {
+    return this.addItem(deviceId, session, num);
+  }
+
+  return {
+    messages: [{
+      type: 'error',
+      text: `❓ "${raw}" isn't a valid item number (1-${menuSize}).\nType "done" to finish or "0" to cancel.`,
+    }],
+    state: ChatState.ORDERING,
+  };
+}
+
+ private async addItem(deviceId: string, session: Session, position: number): Promise<ChatResult> {
+  // ✅ Resolve position (1-based) → real DB item id
+  const menuIndex = await this.redis.getMenuIndex(deviceId);
+
+  if (menuIndex.length === 0) {
+    // User never loaded the menu — prompt them to
     return {
       messages: [{
         type: 'error',
-        text: `❓ "${raw}" isn't a valid item number (1-10).\nType "done" to finish or "0" to cancel.`,
+        text: '⚠️ Please view the menu first. Type "1" to see it.',
       }],
       state: ChatState.ORDERING,
     };
   }
 
-  private async addItem(deviceId: string, session: Session, itemId: number): Promise<ChatResult> {
-    let item: Awaited<ReturnType<typeof this.menu.findOne>>;
-    try {
-      item = await this.menu.findOne(itemId);
-    } catch {
-      return {
-        messages: [{ type: 'error', text: `⚠️ No item #${itemId}. Choose 1–10.` }],
-        state: ChatState.ORDERING,
-      };
-    }
+  const realItemId = menuIndex[position - 1]; // convert 1-based → 0-based index
 
-    if (!item.available) {
-      return {
-        messages: [{ type: 'error', text: `😔 ${item.emoji} ${item.name} is unavailable. Pick another!` }],
-        state: ChatState.ORDERING,
-      };
-    }
-
-    const cartItem = await this.orders.addToCart(session, item);
-    const cartCount = await this.orders.getCartCount(session);
-
+  if (!realItemId) {
     return {
       messages: [{
-        type: 'item_added',
-        text: `✅ ${item.emoji} *${item.name}* added! (${naira(item.price)})`,
-        payload: {
-          item: { name: item.name, emoji: item.emoji, priceFormatted: naira(item.price), quantity: cartItem.quantity },
-          cartCount,
-          hint: `${cartCount} item(s) in cart · add more or type "done"`,
-        },
+        type: 'error',
+        text: `⚠️ No item #${position}. Choose 1–${menuIndex.length}.`,
       }],
       state: ChatState.ORDERING,
     };
   }
+
+  // ✅ Now fetch using the real DB id
+  let item: Awaited<ReturnType<typeof this.menu.findOne>>;
+  try {
+    item = await this.menu.findOne(realItemId);
+  } catch {
+    return {
+      messages: [{ type: 'error', text: `⚠️ Item #${position} could not be found. Try again.` }],
+      state: ChatState.ORDERING,
+    };
+  }
+
+  if (!item.available) {
+    return {
+      messages: [{ type: 'error', text: `😔 ${item.emoji} ${item.name} is unavailable. Pick another!` }],
+      state: ChatState.ORDERING,
+    };
+  }
+
+  const cartItem = await this.orders.addToCart(session, item);
+  const cartCount = await this.orders.getCartCount(session);
+
+  return {
+    messages: [{
+      type: 'item_added',
+      text: `✅ ${item.emoji} *${item.name}* added! (${naira(item.price)})`,
+      payload: {
+        item: {
+          name: item.name,
+          emoji: item.emoji,
+          priceFormatted: naira(item.price),
+          quantity: cartItem.quantity,
+        },
+        cartCount,
+        hint: `${cartCount} item(s) in cart · add more or type "done"`,
+      },
+    }],
+    state: ChatState.ORDERING,
+  };
+}
 
   async checkout(deviceId: string, session: Session): Promise<ChatResult> {
     const cartItems = await this.orders.getCart(session);
