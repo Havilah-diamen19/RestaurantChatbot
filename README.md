@@ -1,98 +1,333 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# 🍽️ Chop & Chat — Restaurant Chatbot API
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+A real-time restaurant ordering chatbot backend built with **NestJS**, **WebSockets**, **MySQL**, and **Redis**. Customers interact via a conversational chat interface to browse the menu, manage a cart, and pay securely through Paystack — all without a traditional UI form.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+---
 
-## Description
+## Table of Contents
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Modules](#modules)
+- [WebSocket Chat Protocol](#websocket-chat-protocol)
+- [REST API](#rest-api)
+- [Payment Flow](#payment-flow)
+- [Tech Stack](#tech-stack)
+- [Environment Variables](#environment-variables)
+- [Getting Started](#getting-started)
+- [Project Structure](#project-structure)
 
-## Project setup
+---
 
-```bash
-$ npm install
+## Overview
+
+Chop & Chat lets customers order food through a chat interface. The bot guides users through a stateful conversation — browsing the menu, adding items to cart, checking out, and receiving real-time payment confirmation — all over a persistent WebSocket connection.
+
+Key capabilities:
+- Stateful chat sessions tracked per device via Redis
+- Real-time messaging over Socket.IO with typing indicators
+- Full cart and order lifecycle management in MySQL
+- Paystack payment initiation, verification, and webhook handling
+- Scheduled order support (order now, deliver later)
+- Rate limiting, input validation, and HMAC-verified webhooks
+
+---
+
+## Architecture
+
+```
+Client (Browser / Mobile)
+        │
+        │  WebSocket (Socket.IO)        HTTP REST
+        │  ws://host/chat               http://host/api
+        ▼
+┌─────────────────────────────────────────────┐
+│              NestJS Application              │
+│                                             │
+│  ChatGateway ──► ChatService                │
+│       │               │                     │
+│       │         ┌─────┴──────┐              │
+│       │         ▼            ▼              │
+│       │    MenuService   OrdersService      │
+│       │         │            │              │
+│       │    SessionService    │              │
+│       │         │            │              │
+│       └── RedisService ◄─────┘              │
+│                                             │
+│  PaymentService ──► Paystack API            │
+│       └── ChatGateway (real-time notify)    │
+└──────────────┬──────────────────────────────┘
+               │
+       ┌───────┴────────┐
+       ▼                ▼
+    MySQL            Redis
+ (orders, menu,   (chat state,
+  sessions)        cache)
 ```
 
-## Compile and run the project
+---
 
-```bash
-# development
-$ npm run start
+## Modules
 
-# watch mode
-$ npm run start:dev
+### `ChatModule`
+The heart of the application. Handles all WebSocket connections and routes user input through a state machine.
 
-# production mode
-$ npm run start:prod
+**States:** `HOME` → `ORDERING` → `CHECKOUT`
+
+**Global commands (work from any state):**
+
+| Input | Action |
+|-------|--------|
+| `1` | Show menu / start ordering |
+| `99` | Checkout |
+| `98` | Order history |
+| `97` | View current cart |
+| `0` | Cancel order |
+| `menu` / `start` / `home` | Return to main menu |
+
+**ChatGateway** manages Socket.IO lifecycle — on connect, it greets returning users with their order count and cart status, or welcomes new users with the main menu.
+
+---
+
+### `SessionModule`
+Identifies customers by `deviceId` (passed as a WebSocket query param). Creates a persistent session record in MySQL on first connect. No login required — device-based identity.
+
+---
+
+### `OrderModule`
+Manages the full cart and order lifecycle:
+- Add items to cart (persisted in MySQL)
+- View and update cart
+- Create an order snapshot at checkout
+- Track order status: `PENDING` → `PAID` → `CANCELLED`
+- Support for scheduled orders (future delivery)
+- Order history per session
+
+---
+
+### `MenuModule`
+Manages restaurant menu items with categories, pricing (stored in kobo), availability flags, emoji, tags, and descriptions. All prices are displayed in Naira (₦) converted from kobo at render time.
+
+---
+
+### `PaymentModule`
+Integrates with **Paystack** for Nigerian payment processing:
+- **Initiate** — creates a DB order snapshot, calls Paystack to get a payment URL
+- **Verify** — polls Paystack to confirm payment status
+- **Webhook** — receives server-to-server `charge.success` / `charge.failed` events, verified via HMAC-SHA512 signature
+- On payment confirmation, pushes a real-time `bot_message` to the customer's WebSocket connection
+
+---
+
+### `RedisModule`
+Stores ephemeral chat state (`HOME`, `ORDERING`, `CHECKOUT`) per device. Also powers the global response cache (`CacheModule`) with a 5-minute TTL.
+
+---
+
+### `SeedModule`
+Populates the database with initial menu data for development and testing.
+
+---
+
+## WebSocket Chat Protocol
+
+**Connection:**
+```
+ws://localhost:5000/chat?deviceId=<your-device-id>
+```
+`deviceId` must be at least 4 characters. The server disconnects clients that omit it.
+
+**Client → Server events:**
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `message` | `{ message: string }` | Send a chat message |
+
+**Server → Client events:**
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `bot_message` | `{ messages: BotMsg[], state: string }` | Bot response |
+| `typing` | `true / false` | Typing indicator |
+| `error` | `{ message: string }` | Connection or handler error |
+
+**BotMsg types:** `greeting`, `main_menu`, `menu_list`, `item_added`, `checkout`, `current_order`, `order_history`, `payment_success`, `info`, `error`
+
+---
+
+## REST API
+
+Base URL: `http://localhost:5000/api`
+
+Swagger docs available at: `http://localhost:5000/docs`
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/menu` | List all menu items |
+| `POST` | `/api/payments/initiate` | Initiate Paystack payment |
+| `GET` | `/api/payments/verify/:reference` | Verify payment status |
+| `POST` | `/api/payments/webhook` | Paystack webhook receiver |
+| `GET` | `/api/orders` | List orders for a session |
+
+All protected routes use the `X-Device-ID` header for session identification.
+
+**Rate limits:**
+- 10 requests/second (short window)
+- 100 requests/minute (long window)
+
+---
+
+## Payment Flow
+
+```
+1. Customer types "99" (checkout) in chat
+2. Frontend calls POST /api/payments/initiate with { email, deviceId }
+3. Server snapshots cart → creates Order record → calls Paystack
+4. Paystack returns { paymentUrl, reference }
+5. Customer is redirected to Paystack checkout page
+6. On success, Paystack sends webhook to POST /api/payments/webhook
+7. Server verifies HMAC signature → marks order PAID → clears cart
+8. Server pushes real-time payment_success message via WebSocket
+9. Customer sees confirmation in chat instantly
 ```
 
-## Run tests
+Scheduled orders skip the payment step and are saved with `status: SCHEDULED`.
 
-```bash
-# unit tests
-$ npm run test
+---
 
-# e2e tests
-$ npm run test:e2e
+## Tech Stack
 
-# test coverage
-$ npm run test:cov
+| Layer | Technology |
+|-------|-----------|
+| Framework | NestJS 11 |
+| Language | TypeScript 5 |
+| WebSockets | Socket.IO 4 + `@nestjs/platform-socket.io` |
+| Database | MySQL 8 via TypeORM |
+| Cache / State | Redis 5 via `cache-manager-redis-yet` |
+| Payments | Paystack (Nigerian payment gateway) |
+| Validation | `class-validator` + `class-transformer` |
+| Security | Helmet, CORS, ThrottlerModule, HMAC webhook verification |
+| API Docs | Swagger (`@nestjs/swagger`) |
+| Runtime | Node.js |
+
+---
+
+## Environment Variables
+
+Copy `.env.example` to `.env` and fill in the values:
+
+```env
+# Database
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=root
+DB_PASS=yourpassword
+DB_NAME=restaurant_chatbot
+
+# Redis
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=
+
+# Paystack
+PAYSTACK_SECRET_KEY=sk_test_xxxxxxxxxxxxxxxx
+
+# App
+PORT=5000
+NODE_ENV=development
+FRONTEND_URL=http://localhost:3000
 ```
 
-## Deployment
+---
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+## Getting Started
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+**Prerequisites:** Node.js 18+, MySQL 8, Redis
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+# 1. Install dependencies
+npm install
+
+# 2. Set up environment
+cp .env.example .env
+# Fill in your .env values
+
+# 3. Create the database
+mysql -u root -p -e "CREATE DATABASE restaurant_chatbot;"
+
+# 4. Start Redis
+sudo systemctl start redis-server
+
+# 5. Start the server (dev mode with hot reload)
+npm run start:dev
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+**Endpoints will be available at:**
+- API → `http://localhost:5000/api`
+- Swagger → `http://localhost:5000/docs`
+- WebSocket → `ws://localhost:5000/chat`
 
-## Resources
+**Seed the menu (first run):**
 
-Check out a few resources that may come in handy when working with NestJS:
+The `SeedModule` auto-populates menu data on startup in development mode.
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+---
 
-## Support
+## Project Structure
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+```
+src/
+├── app.module.ts           # Root module — wires everything together
+├── main.ts                 # Bootstrap: CORS, Helmet, Swagger, global pipes
+│
+├── chat/
+│   ├── chat.gateway.ts     # WebSocket gateway — connection lifecycle & events
+│   ├── chat.service.ts     # State machine — routes input to correct handler
+│   ├── chat.controller.ts  # REST fallback endpoints
+│   └── dtos/chat.dto.ts    # Request validation DTOs
+│
+├── session/
+│   ├── session.service.ts  # Device-based session creation & lookup
+│   └── entities/
+│       └── session.entity.ts
+│
+├── menu/
+│   ├── menu.service.ts     # Menu CRUD
+│   ├── menu.controller.ts
+│   └── entities/
+│       ├── menu.entity.ts
+│       └── menu-category.entity.ts
+│
+├── order/
+│   ├── order.service.ts    # Cart management, order creation, history
+│   ├── order.controller.ts
+│   ├── order-enum.ts       # OrderStatus enum
+│   └── entities/
+│       ├── order.entity.ts
+│       ├── order-item.entity.ts
+│       └── cart-item.entity.ts
+│
+├── payment/
+│   ├── payment.service.ts  # Paystack initiate, verify, webhook
+│   └── payment.controller.ts
+│
+├── redis/
+│   └── redis.service.ts    # Chat state get/set per deviceId
+│
+├── seed/
+│   └── seed.service.ts     # Dev data seeder
+│
+└── libs/
+    ├── device-id.decorator.ts    # @DeviceId() param decorator
+    └── http.exception.filter.ts  # Global error formatter
+```
 
-## Stay in touch
+---
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+## Notes for Production
 
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+- Set `NODE_ENV=production` — disables TypeORM `synchronize` (use migrations instead)
+- Use a strong `REDIS_PASSWORD`
+- Point `FRONTEND_URL` to your actual frontend domain for CORS
+- Expose the webhook endpoint (`/api/payments/webhook`) publicly for Paystack to reach it
+- Use a process manager like PM2: `pm2 start dist/main.js`
