@@ -36,7 +36,7 @@ import { OrderItem } from './order/entities/order-item.entity';
         password: config.get('DB_PASS'),
         database: config.get('DB_NAME'),
         entities: [MenuItem, Session, CartItem, Order, OrderItem],
-        synchronize: config.get('NODE_ENV') !== 'production', // use migrations in prod
+        synchronize: true, // use migrations in prod
         logging: config.get('NODE_ENV') === 'development',
         charset: 'utf8mb4',
       }),
