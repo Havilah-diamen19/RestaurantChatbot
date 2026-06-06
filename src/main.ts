@@ -50,7 +50,7 @@ async function bootstrap() {
   });
 
   const port = process.env.PORT || 5000;
-  await app.listen(port);
+  await app.listen(port, '0.0.0.0');
 
   console.log(`🚀 Chop & Chat API     → http://localhost:${port}/api`);
   console.log(`📖 Swagger docs        → http://localhost:${port}/docs`);
