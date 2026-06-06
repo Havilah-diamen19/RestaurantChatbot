@@ -26,22 +26,18 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   constructor(private readonly config: ConfigService) {}
 
   async onModuleInit() {
-    this.client = createClient({
-      socket: {
-        host: this.config.get<string>('REDIS_HOST', 'localhost'),
-        port: this.config.get<number>('REDIS_PORT', 6379),
-      },
-      password: this.config.get<string>('REDIS_PASSWORD') || undefined,
-    });
+  this.client = createClient({
+    url: this.config.get<string>('REDIS_URL'),
+  });
 
-    this.client.on('error', (err) =>
-      this.logger.error('Redis error', err),
-    );
+  this.client.on('error', (err) =>
+    this.logger.error('Redis error', err),
+  );
 
-    await this.client.connect();
+  await this.client.connect();
 
-    this.logger.log('✅ Redis connected');
-  }
+  this.logger.log('✅ Redis connected');
+}
 
   async onModuleDestroy() {
     await this.client.quit();
