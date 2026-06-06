@@ -8,7 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { ModuleRef } from '@nestjs/core'; // ← add this
+import { ModuleRef } from '@nestjs/core';
 import * as crypto from 'crypto';
 import axios from 'axios';
 import { Order } from '../order/entities/order.entity';
