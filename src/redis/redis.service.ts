@@ -30,6 +30,8 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     url: this.config.get<string>('REDIS_URL'),
   });
 
+  this.logger.log(`Connecting to Redis at ${this.config.get<string>('REDIS_URL')}`);
+
   this.client.on('error', (err) =>
     this.logger.error('Redis error', err),
   );

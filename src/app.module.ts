@@ -44,19 +44,21 @@ import { OrderItem } from './order/entities/order-item.entity';
 
     // ── Redis Cache ──────────────────────────────────────────────────────────
     CacheModule.registerAsync({
-      isGlobal: true,
-      inject: [ConfigService],
-      useFactory: async (config: ConfigService) => ({
+    isGlobal: true,
+    inject: [ConfigService],
+    useFactory: async (config: ConfigService) => {
+      const redisUrl = config.get<string>('REDIS_URL');
+      return {
         store: await redisStore({
+          url: redisUrl,
           socket: {
-            host: config.get('REDIS_HOST'),
-            port: config.get<number>('REDIS_PORT'),
+            tls: redisUrl.startsWith('rediss://'),
           },
-          password: config.get('REDIS_PASSWORD'),
-          ttl: 60 * 5 * 1000, // default 5-minute TTL (ms)
+          ttl: 60 * 5 * 1000,
         }),
-      }),
-    }),
+      };
+    },
+  }),
 
     // ── Rate Limiting ────────────────────────────────────────────────────────
     ThrottlerModule.forRoot([
